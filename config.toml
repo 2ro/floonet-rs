@@ -1,0 +1,221 @@
+# floonet-rs relay configuration.
+#
+# Every setting shown commented-out is the built-in default. The shipped
+# defaults give you a hardened Floonet relay: a default-deny event kind
+# whitelist, neutral public metadata, and everything paid switched off.
+
+[info]
+# The advertised URL for the Nostr websocket. Set this to your public
+# wss:// address; NIP-42 auth validates against it.
+relay_url = "wss://relay.example.com/"
+
+# Relay information for clients (NIP-11). Keep these neutral: the public
+# relay metadata says nothing about payments, by design.
+name = "floonet-rs-relay"
+description = "A Floonet relay for the Grin community Nostr network."
+
+# Administrative contact pubkey (32-byte hex, not npub)
+#pubkey = "0c2d168a4ae8ca58c9f1ab237b5df682599c6c7ab74307ea8b05684b60405d41"
+
+# Administrative contact URI
+#contact = "mailto:contact@example.com"
+
+# Favicon location, relative to the current directory (ICO format).
+#favicon = "favicon.ico"
+
+# URL of the relay's icon.
+#relay_icon = "https://example.com/img.png"
+
+# Path to a custom relay html landing page. When unset, the relay serves
+# a neutral Floonet page with the Floonet logo.
+#relay_page = "index.html"
+
+[database]
+# Database engine (sqlite/postgres). Defaults to sqlite. The built-in
+# name authority requires sqlite.
+#engine = "sqlite"
+
+# Directory for SQLite files.
+data_directory = "/var/lib/floonet-rs"
+
+# Database connection pool settings for subscribers:
+#min_conn = 0
+#max_conn = 8
+
+[logging]
+# Directory to store log files. Log files roll over daily.
+#folder_path = "./log"
+#file_prefix = "floonet-rs"
+
+[grpc]
+# gRPC extension point for externalized event admission (see
+# proto/nauthz.proto). Optional; the built-in admission layer already
+# enforces the kind whitelist and auth policies.
+#event_admission_server = "http://[::1]:50051"
+#restricts_write = true
+
+[network]
+# Bind to this network address. Keep loopback and put a reverse proxy
+# (Caddy/nginx) in front for TLS; see deploy/Caddyfile.
+address = "127.0.0.1"
+
+# Listen on this port
+port = 8080
+
+# Read the real client IP from this header. LOAD-BEARING behind a
+# reverse proxy: per-IP rate limits key off it.
+remote_ip_header = "x-real-ip"
+
+[options]
+# Reject events with timestamps too far in the future, in seconds.
+reject_future_seconds = 1800
+
+[limits]
+# Limit events created per second (server-wide, averaged over a minute).
+messages_per_sec = 5
+
+# Limit client subscriptions created per minute.
+subscriptions_per_min = 30
+
+# Maximum size of an EVENT message in bytes. Keep this large enough for
+# gift-wrapped payloads (the default 256 KB is safe).
+#max_event_bytes = 262144
+
+# THE KEYSTONE: default-deny event kind whitelist. The relay accepts
+# ONLY these kinds and rejects everything else. Removing the line
+# entirely keeps this exact built-in set (never allow-all); an empty
+# list denies everything.
+#
+#     0  profile metadata
+#     3  contacts
+#     5  delete (NIP-09)
+#    13  seal
+#  1059  gift wrap (NIP-59)
+# 10002  relay list (NIP-65)
+# 10050  DM relays (NIP-17)
+# 27235  HTTP auth (NIP-98, used by the name authority)
+event_kind_allowlist = [0, 3, 5, 13, 1059, 10002, 10050, 27235]
+
+# Rejects imprecise requests (kind-only or author-only scrapes).
+limit_scrapers = false
+
+[authorization]
+# Restrict event publishing to these authors (32-byte hex pubkeys).
+#pubkey_whitelist = [
+#  "35d26e4690cbe1a898af61cc3515661eb5fa763b57bd0b42e45099c8b32fd50f",
+#]
+
+# Enable NIP-42 authentication (the relay sends an AUTH challenge).
+#nip42_auth = false
+
+# Send gift wraps and DMs only to their authenticated recipients.
+#nip42_dms = false
+
+# With nip42_auth on, refuse writes from clients that have not
+# completed AUTH (they receive an `auth-required:` OK message).
+#require_auth_to_write = false
+
+[goblinpay]
+# Charge GRIN for relay uses via a GoblinPay server. Modes:
+#   "off"   everything is free (default)
+#   "name"  claiming a name at the built-in name authority requires a
+#           confirmed Grin payment
+#   "write" publishing events requires a paid admission
+# The same keys are readable from the environment instead:
+# FLOONET_PAY_MODE, FLOONET_GOBLINPAY_URL, FLOONET_GOBLINPAY_TOKEN,
+# FLOONET_NAME_PRICE_GRIN.
+#pay_mode = "off"
+
+# Your GoblinPay server and its API token (GP_API_TOKEN). Keep this file
+# unreadable to other users (chmod 0600) when a token is set, or pass
+# the token via FLOONET_GOBLINPAY_TOKEN.
+#url = "https://pay.example.com"
+#api_token = ""
+
+# Prices in GRIN, editable any time.
+#name_price_grin = 1.0
+#admission_price_grin = 1.0
+
+[name_authority]
+# The built-in name authority: name@domain NIP-05 identities with
+# NIP-98 authenticated self-service registration, served on this relay's
+# own listener (/.well-known/nostr.json and /api/v1/*).
+#enabled = false
+
+# The bare host names live under (the `@domain` part) and the public
+# base URL clients reach. base_url is LOAD-BEARING: NIP-98 auth events
+# are verified against it, so it must be https:// and match what
+# clients actually use.
+#domain = "example.com"
+#base_url = "https://example.com"
+
+# Relays advertised in /.well-known/nostr.json. Defaults to this
+# relay's own relay_url.
+#relays = ["wss://relay.example.com"]
+
+# Name policy.
+#name_min = 3
+#name_max = 20
+#name_change_cooldown_secs = 600
+
+# NIP-98 freshness bound in seconds (with one-time-use replay guard).
+#auth_max_age_secs = 60
+
+# Per-IP rate limits (requests per window, window in seconds).
+#read_rate_max = 120
+#read_rate_window_secs = 60
+#write_rate_max = 10
+#write_rate_window_secs = 3600
+
+# Optional file of extra reserved names (one per line, # comments).
+# The built-in generic list and your own domain labels are always
+# reserved, including digit/separator look-alikes.
+#reserved_file = "/etc/floonet-rs/reserved"
+
+[exit]
+# Co-located mixnet exit. When enabled the relay runs the bundled
+# floonet-mixexit binary next to itself: an ordinary unbonded mixnet
+# client that forwards every accepted stream to ONE fixed upstream (your
+# relay), never a caller-chosen target, so it is structurally not an
+# open proxy. Wallets can then reach this relay over the mixnet with no
+# public DNS on the payment path; they fall back to the public mixnet
+# route when the exit is down.
+#enabled = false
+
+# Path to the bundled floonet-mixexit binary.
+#binary = "/usr/local/bin/floonet-mixexit"
+
+# Data dir for the persistent mixnet identity. The exit's STABLE mixnet
+# address is printed at startup and written to <data_dir>/nym_address.txt;
+# publish it (for example in the Floonet relay pool `exit` field) so
+# wallets can prefer this exit. Back the directory up: losing it rotates
+# the address.
+#data_dir = "/var/lib/floonet-rs/mixexit"
+
+# Upstream the exit pipes every stream to. Point it at your PUBLIC TLS
+# endpoint so wallets get your real certificate through the mixnet.
+# Empty means this relay's local listener (no TLS).
+#upstream = "relay.example.com:443"
+
+[verified_users]
+# NIP-05 verification of users (upstream feature; the built-in name
+# authority is separate). "enabled" enforces, "passive" observes,
+# "disabled" does nothing.
+#mode = "disabled"
+
+[pay_to_relay]
+# Upstream pay-to-relay admission. You normally do NOT edit this
+# section: setting goblinpay.pay_mode = "write" configures it for
+# GoblinPay automatically. It remains available for operators who want
+# the upstream Lightning processors instead.
+#enabled = false
+#processor = "GoblinPay"
+#admission_cost = 1000000000
+#cost_per_event = 0
+#node_url = ""
+#api_secret = ""
+#sign_ups = false
+#direct_message = false
+#terms_message = """
+#Use this relay lawfully and without abuse.
+#"""

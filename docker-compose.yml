@@ -1,0 +1,48 @@
+# One-command deploy: the relay plus a Caddy TLS proxy.
+#
+#   1. cp config.toml my-config.toml
+#      edit: info.relay_url, and set [network] address = "0.0.0.0"
+#            (Caddy reaches the relay over the compose network)
+#   2. echo 'FLOONET_DOMAIN=relay.example.com' > .env
+#   3. docker compose up -d
+#
+# The relay container runs as a non-root user with a read-only root
+# filesystem; only the data volume is writable. Caddy terminates TLS and
+# forwards the real client IP in X-Real-IP (load-bearing for the per-IP
+# rate limits).
+
+services:
+  relay:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - relay-data:/usr/src/app/db
+      - ./my-config.toml:/usr/src/app/config.toml:ro
+    environment:
+      RUST_LOG: warn,floonet_rs=info
+      # Paid mode without baking secrets into the config file:
+      # FLOONET_PAY_MODE: "name"
+      # FLOONET_GOBLINPAY_URL: "https://pay.example.com"
+      # FLOONET_GOBLINPAY_TOKEN: "..."
+      # FLOONET_NAME_PRICE_GRIN: "1.0"
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      FLOONET_DOMAIN: ${FLOONET_DOMAIN:?set FLOONET_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile.compose:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,27 @@
+# floonet-mixexit: the scoped mixnet exit bundled with a Floonet relay.
+#
+# Built separately from the relay (it pulls the whole nym-sdk tree):
+#   cargo build --release --manifest-path mixexit/Cargo.toml
+# The nym-sdk path dependency expects the Goblin nym checkout (branch
+# `goblin`) two directories up; adjust the path for your layout.
+
+[package]
+name = "floonet-mixexit"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Scoped mixnet exit bundled with a Floonet relay: pipes accepted mixnet streams to ONE fixed upstream (never arbitrary targets)."
+
+[workspace]
+
+[dependencies]
+## Path dep into the local nym checkout (branch goblin, pinned rev; the
+## same checkout the Goblin wallet path-depends on, so both ends speak
+## the same MixnetStream protocol).
+nym-sdk = { path = "../../nym/sdk/rust/nym-sdk" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal"] }
+## Only to surface nym-sdk's tracing logs (RUST_LOG-style filtering).
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+strip = true

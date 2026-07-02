@@ -1,0 +1,19 @@
+# Caddy reverse proxy for floonet-rs, with automatic HTTPS.
+#
+# floonet-rs serves everything on one port: the websocket relay, the
+# NIP-11 document, the landing page, and (when enabled) the name
+# authority endpoints. Point your domain at this host and Caddy obtains
+# certificates automatically.
+#
+# SECURITY-CRITICAL: X-Real-IP must be set from the real client address.
+# The relay and the name authority key ALL of their per-IP rate limiting
+# off this header (config.toml `remote_ip_header = "x-real-ip"`); if the
+# proxy does not set it, every request looks like one client and the
+# limiter is defeated. Caddy's {remote_host} is the connecting peer, not
+# a forwardable client header.
+
+relay.example.com {
+	reverse_proxy 127.0.0.1:8080 {
+		header_up X-Real-IP {remote_host}
+	}
+}

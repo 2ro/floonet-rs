@@ -1,0 +1,65 @@
+# Hardened systemd unit for floonet-rs on bare metal.
+#
+# Install (or just run deploy/install.sh):
+#   sudo install -m0755 floonet-rs /usr/local/bin/
+#   sudo install -m0755 floonet-mixexit /usr/local/bin/    # optional, mixnet exit
+#   sudo install -d -m0755 /etc/floonet-rs
+#   sudo install -m0600 config.toml /etc/floonet-rs/config.toml
+#   sudo install -m0644 deploy/floonet-rs.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now floonet-rs
+#
+# The service is locked down: dynamic unprivileged user, read-only
+# system, no new privileges; only its state directory is writable.
+
+[Unit]
+Description=floonet-rs relay (Floonet relay for the Grin community Nostr network)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# DynamicUser allocates a throwaway unprivileged user at runtime. If you
+# need a stable owner for the data dir, comment this out and set
+# `User=floonet` (create the user first).
+DynamicUser=yes
+
+# Managed state at /var/lib/floonet-rs (created and chowned by systemd).
+# config.toml's data_directory and exit.data_dir point inside it.
+StateDirectory=floonet-rs
+StateDirectoryMode=0750
+
+# Optional environment overrides (paid mode without editing config.toml):
+# FLOONET_PAY_MODE, FLOONET_GOBLINPAY_URL, FLOONET_GOBLINPAY_TOKEN,
+# FLOONET_NAME_PRICE_GRIN. Keep the file 0600 when it holds a token.
+#EnvironmentFile=-/etc/floonet-rs/env
+
+ExecStart=/usr/local/bin/floonet-rs --config /etc/floonet-rs/config.toml
+Restart=on-failure
+RestartSec=2
+
+# --- hardening ---
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# Only the state directory is writable.
+ReadWritePaths=/var/lib/floonet-rs
+# No raw sockets; only IP (and unix for the database).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

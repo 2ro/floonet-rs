@@ -1,0 +1,11 @@
+# Caddyfile used by docker-compose.yml. The upstream is the compose
+# service name `relay`; FLOONET_DOMAIN is injected from .env.
+#
+# SECURITY-CRITICAL: X-Real-IP is set from the real client address; the
+# relay and name authority key their per-IP rate limiting off it.
+
+{$FLOONET_DOMAIN} {
+	reverse_proxy relay:8080 {
+		header_up X-Real-IP {remote_host}
+	}
+}
