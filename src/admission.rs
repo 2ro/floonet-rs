@@ -16,11 +16,23 @@ use crate::config::Settings;
 use crate::event::Event;
 
 /// The Floonet default kind whitelist, applied when the operator has not
-/// configured `event_kind_allowlist` explicitly. Kinds:
-/// 0 profile metadata, 3 contacts, 5 delete (NIP-09), 13 seal,
-/// 1059 gift wrap (NIP-59), 10002 relay list (NIP-65),
-/// 10050 DM relays (NIP-17), 27235 NIP-98 HTTP auth.
-pub const DEFAULT_ALLOWED_KINDS: [u64; 8] = [0, 3, 5, 13, 1059, 10002, 10050, 27235];
+/// configured `event_kind_allowlist` explicitly. It is the union of the two
+/// apps this relay serves (default-deny for everything else).
+///
+/// Goblin wallet: 0 profile, 3 contacts, 5 delete (NIP-09), 13 seal (NIP-59),
+/// 1059 gift wrap (NIP-59), 10002 relay list (NIP-65), 10050 DM relays
+/// (NIP-17), 27235 NIP-98 HTTP auth (name authority).
+///
+/// Magick Market: 1 text note, 7 reaction (NIP-25), 14 order chat, 16 order
+/// status, 17 payment receipt (Gamma), 1111 comment (NIP-22), 10000
+/// mute/blacklist, 30000 people set, 30003 bookmark set (NIP-51), 30078 app
+/// data (NIP-78), 30402 product listing (NIP-99), 30405 product collection,
+/// 30406 shipping option (Gamma), 31990 handler info (NIP-89), 24133 remote
+/// signing (NIP-46).
+pub const DEFAULT_ALLOWED_KINDS: [u64; 23] = [
+    0, 1, 3, 5, 7, 13, 14, 16, 17, 1059, 1111, 10000, 10002, 10050, 24133,
+    27235, 30000, 30003, 30078, 30402, 30405, 30406, 31990,
+];
 
 /// Outcome of an admission check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,8 +198,8 @@ mod tests {
     #[test]
     fn default_whitelist_rejects_disallowed_kinds() {
         let admission = Admission::from_settings(&floonet_settings());
-        // kind 1 (short text note) and other common kinds are NOT accepted.
-        for kind in [1u64, 4, 6, 7, 42, 1984, 9735, 30023] {
+        // Common kinds outside the two-app whitelist are NOT accepted.
+        for kind in [4u64, 6, 42, 1984, 9735, 25910, 30017, 30018, 30023] {
             match admission.check(&event_of_kind(kind), None) {
                 Decision::Deny { auth_required, .. } => {
                     assert!(!auth_required, "kind rejection is not an auth issue");
@@ -203,7 +215,7 @@ mod tests {
         settings.limits.event_kind_allowlist = None;
         let admission = Admission::from_settings(&settings);
         assert_eq!(admission.check(&event_of_kind(1059), None), Decision::Allow);
-        assert_ne!(admission.check(&event_of_kind(1), None), Decision::Allow);
+        assert_ne!(admission.check(&event_of_kind(30023), None), Decision::Allow);
     }
 
     #[test]
@@ -272,7 +284,7 @@ mod tests {
         settings.authorization.nip42_auth = true;
         settings.authorization.require_auth_to_write = true;
         let admission = Admission::from_settings(&settings);
-        match admission.check(&event_of_kind(1), None) {
+        match admission.check(&event_of_kind(30023), None) {
             Decision::Deny { auth_required, .. } => {
                 assert!(!auth_required, "disallowed kind must not leak auth hints");
             }

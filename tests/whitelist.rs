@@ -66,13 +66,13 @@ async fn whitelist_accepts_allowed_kind_and_rejects_disallowed() -> Result<()> {
     let relay = common::start_relay()?;
     common::wait_for_healthy_relay(&relay).await?;
 
-    // Kind 1 (short text note) is NOT in the Floonet whitelist: rejected.
-    let (msg, id) = signed_event(1, "hello world");
+    // Kind 30023 (long-form article) is NOT in the Floonet whitelist: rejected.
+    let (msg, id) = signed_event(30023, "hello world");
     let ok = publish_and_get_ok(relay.port, &msg, &id).await?;
     assert_eq!(
         ok.get(2).and_then(Value::as_bool),
         Some(false),
-        "kind 1 must be rejected: {ok}"
+        "kind 30023 must be rejected: {ok}"
     );
     let reason = ok.get(3).and_then(Value::as_str).unwrap_or_default();
     assert!(

@@ -84,17 +84,29 @@ subscriptions_per_min = 30
 # THE KEYSTONE: default-deny event kind whitelist. The relay accepts
 # ONLY these kinds and rejects everything else. Removing the line
 # entirely keeps this exact built-in set (never allow-all); an empty
-# list denies everything.
+# list denies everything. The set is the union of the two apps this
+# relay serves (Goblin wallet + Magick Market marketplace).
 #
-#     0  profile metadata
-#     3  contacts
-#     5  delete (NIP-09)
-#    13  seal
+# Goblin wallet:
+#     0  profile metadata          10002  relay list (NIP-65)
+#     3  contacts                  10050  DM relays (NIP-17)
+#     5  delete (NIP-09)           27235  HTTP auth (NIP-98, name authority)
+#    13  seal (NIP-59)
 #  1059  gift wrap (NIP-59)
-# 10002  relay list (NIP-65)
-# 10050  DM relays (NIP-17)
-# 27235  HTTP auth (NIP-98, used by the name authority)
-event_kind_allowlist = [0, 3, 5, 13, 1059, 10002, 10050, 27235]
+#
+# Magick Market marketplace:
+#     1  text note (NIP-01)        30000  people set (NIP-51)
+#     7  reaction (NIP-25)         30003  bookmark set (NIP-51)
+#    14  order chat (Gamma)        30078  app data: cart/prefs (NIP-78)
+#    16  order status (Gamma)      30402  product listing (NIP-99)
+#    17  payment receipt (Gamma)   30405  product collection (Gamma)
+#  1111  comment (NIP-22)          30406  shipping option (Gamma)
+# 10000  mute/blacklist (NIP-51)   31990  handler info (NIP-89)
+# 24133  remote signing (NIP-46)
+event_kind_allowlist = [
+    0, 1, 3, 5, 7, 13, 14, 16, 17, 1059, 1111, 10000, 10002, 10050, 24133,
+    27235, 30000, 30003, 30078, 30402, 30405, 30406, 31990,
+]
 
 # Rejects imprecise requests (kind-only or author-only scrapes).
 limit_scrapers = false
