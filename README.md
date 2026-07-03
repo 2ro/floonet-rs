@@ -16,8 +16,9 @@ upstream relay core intact and adds four configurable, modular features:
 * **Authentication**: NIP-42, with optional require-auth-to-write and an
   author whitelist.
 * A **built-in name authority**: `name@domain` NIP-05 identities with
-  NIP-98 authenticated self-service registration, served in-process.
-  Optionally paid in GRIN through GoblinPay.
+  NIP-98 authenticated self-service registration, served in-process on
+  the relay's own subdomain — no separate hostname to run. Optionally
+  paid in GRIN through GoblinPay.
 * A **co-located mixnet exit** (config toggle): wallets can reach this
   relay over the mixnet, with no public DNS on the payment path.
 
