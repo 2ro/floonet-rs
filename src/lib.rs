@@ -8,7 +8,6 @@ pub mod error;
 pub mod event;
 pub mod info;
 pub mod admission;
-pub mod exit;
 pub mod name_authority;
 pub mod nauthz;
 pub mod nip05;
