@@ -82,6 +82,10 @@ pub struct Limits {
 #[allow(unused)]
 pub struct Authorization {
     pub pubkey_whitelist: Option<Vec<String>>, // If present, only allow these pubkeys to publish events
+    // Public-note lockdown: authors (npub or hex) allowed to publish the
+    // locked kinds (1 text note, 30023 long-form article). Closed by default:
+    // unset or empty means those kinds are rejected for everyone.
+    pub public_note_authors: Option<Vec<String>>,
     pub nip42_auth: bool,                      // if true enables NIP-42 authentication
     pub nip42_dms: bool, // if true send DMs only to their authenticated recipients
     pub require_auth_to_write: bool, // if true (with nip42_auth), only authenticated clients may publish
@@ -467,8 +471,9 @@ impl Default for Settings {
                 limit_scrapers: false,
             },
             authorization: Authorization {
-                pubkey_whitelist: None, // Allow any address to publish
-                nip42_auth: false,      // Disable NIP-42 authentication
+                pubkey_whitelist: None,     // Allow any address to publish
+                public_note_authors: None,  // Closed by default (kinds 1, 30023)
+                nip42_auth: false,          // Disable NIP-42 authentication
                 nip42_dms: false,       // Send DMs to everybody
                 require_auth_to_write: false,
             },
