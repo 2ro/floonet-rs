@@ -10,7 +10,6 @@ use crate::error::{Error, Result};
 use crate::event::Event;
 use crate::event::EventCmd;
 use crate::event::EventWrapper;
-use crate::exit;
 use crate::info::RelayInfo;
 use crate::name_authority;
 use crate::nip05;
@@ -868,8 +867,6 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
         error!("Database directory does not exist");
         return Err(Error::DatabaseDirError);
     }
-    // Fail fast on a broken mixnet exit toggle.
-    exit::validate(settings)?;
     let addr = format!(
         "{}:{}",
         settings.network.address.trim(),
@@ -970,8 +967,6 @@ pub fn start_server(settings: &Settings, shutdown_rx: MpscReceiver<()>) -> Resul
         } else {
             None
         };
-        // Floonet: co-located mixnet exit, if enabled.
-        exit::spawn(&settings);
         // start the database writer task.  Give it a channel for
         // writing events, and for publishing events that have been
         // written (to all connected clients).

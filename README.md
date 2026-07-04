@@ -7,7 +7,7 @@ Nostr network, forked from
 Floonet is a network of Nostr relays for the Grin community: anyone can
 run one, and anyone can run a name authority on it so people can claim
 (and optionally pay for) a `name@domain` identity. floonet-rs keeps the
-upstream relay core intact and adds four configurable, modular features:
+upstream relay core intact and adds three configurable, modular features:
 
 * An **event kind whitelist** (the keystone): default-deny admission.
   The relay accepts ONLY the kinds it is configured to allow and rejects
@@ -19,8 +19,6 @@ upstream relay core intact and adds four configurable, modular features:
   NIP-98 authenticated self-service registration, served in-process on
   the relay's own subdomain — no separate hostname to run. Optionally
   paid in GRIN through GoblinPay.
-* A **co-located mixnet exit** (config toggle): wallets can reach this
-  relay over the mixnet, with no public DNS on the payment path.
 
 The public relay metadata stays neutral on purpose: the NIP-11 document
 and landing page never mention payments. The relay only ever sees opaque
@@ -170,42 +168,21 @@ again (the rename cooldown still applies).
 Prices are plain config values; edit and restart to change them. The
 public relay metadata stays payment-free regardless of mode.
 
-## Mixnet exit
+## Transport privacy (Tor)
 
-Flip one toggle and this relay also runs a co-located mixnet exit, so
-wallets can reach it over the mixnet:
+This relay needs no privacy component of its own. Wallets connect to it
+over Tor: the client opens a Tor circuit and reaches the relay's
+ordinary clearnet endpoint through a Tor exit, so the relay never sees
+the user's real IP. Tor hides the user's network location; the kind
+whitelist and gift-wrapped (kind 1059) payloads hide everything else
+(content, sender, timing) from the relay itself.
 
-```toml
-[exit]
-enabled = true
-binary = "/usr/local/bin/floonet-mixexit"
-data_dir = "/var/lib/floonet-rs/mixexit"
-upstream = "relay.example.com:443"   # your public TLS endpoint
-```
-
-The exit (bundled in `mixexit/`) is an ordinary unbonded mixnet client:
-no node registration, no tokens, no directory listing. It forwards
-every accepted stream to the ONE configured upstream, never a
-caller-chosen target, so it is structurally not an open proxy and you
-carry no exit liability. Wallets run hostname-validated TLS end to end
-through the pipe; the exit only ever sees ciphertext.
-
-The exit's mixnet address is stable across restarts (the identity
-persists in `data_dir`; back it up). It is printed at startup and
-written to `<data_dir>/nym_address.txt`; publish it, for example in the
-Floonet relay pool `exit` field, so wallets prefer your exit and fall
-back to the public mixnet route when it is down.
-
-Build the exit binary separately (it pulls the mixnet SDK tree):
-
-```sh
-cargo build --release --manifest-path mixexit/Cargo.toml
-```
-
-The path dependency expects the Goblin `nym` checkout (branch `goblin`)
-two directories up; adjust `mixexit/Cargo.toml` for your layout. Verify
-with `floonet-mixexit --selftest`, which joins the mixnet, prints the
-stable address, and exits.
+An operator who wants to remove the Tor-exit hop entirely can front the
+relay with a Tor onion service: run the system `tor` daemon with a
+`HiddenServiceDir` and a `HiddenServicePort` pointed at the relay's
+local listener (`127.0.0.1:<network.port>`), then publish the resulting
+`.onion` address. That is a deploy-layer addition (a `torrc` stanza), not
+a build of this crate. The relay binary is unchanged either way.
 
 ## Extending: policies and paid resources
 

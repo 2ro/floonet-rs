@@ -184,31 +184,6 @@ limit_scrapers = false
 # reserved, including digit/separator look-alikes.
 #reserved_file = "/etc/floonet-rs/reserved"
 
-[exit]
-# Co-located mixnet exit. When enabled the relay runs the bundled
-# floonet-mixexit binary next to itself: an ordinary unbonded mixnet
-# client that forwards every accepted stream to ONE fixed upstream (your
-# relay), never a caller-chosen target, so it is structurally not an
-# open proxy. Wallets can then reach this relay over the mixnet with no
-# public DNS on the payment path; they fall back to the public mixnet
-# route when the exit is down.
-#enabled = false
-
-# Path to the bundled floonet-mixexit binary.
-#binary = "/usr/local/bin/floonet-mixexit"
-
-# Data dir for the persistent mixnet identity. The exit's STABLE mixnet
-# address is printed at startup and written to <data_dir>/nym_address.txt;
-# publish it (for example in the Floonet relay pool `exit` field) so
-# wallets can prefer this exit. Back the directory up: losing it rotates
-# the address.
-#data_dir = "/var/lib/floonet-rs/mixexit"
-
-# Upstream the exit pipes every stream to. Point it at your PUBLIC TLS
-# endpoint so wallets get your real certificate through the mixnet.
-# Empty means this relay's local listener (no TLS).
-#upstream = "relay.example.com:443"
-
 [verified_users]
 # NIP-05 verification of users (upstream feature; the built-in name
 # authority is separate). "enabled" enforces, "passive" observes,

@@ -158,25 +158,6 @@ pub struct NameAuthority {
     pub reserved_file: Option<String>,
 }
 
-/// The co-located mixnet exit (Floonet addition): when enabled, the relay
-/// supervises a bundled `floonet-mixexit` process so wallets can reach
-/// this relay over the mixnet without public DNS on the payment path.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(unused)]
-pub struct MixnetExit {
-    pub enabled: bool,
-    /// Path to the bundled floonet-mixexit binary.
-    pub binary: String,
-    /// Data dir for the persistent mixnet identity. The exit's stable
-    /// mixnet address is written to `<data_dir>/nym_address.txt`.
-    pub data_dir: String,
-    /// Upstream host:port the exit pipes every stream to. Empty means this
-    /// relay's own listener (`127.0.0.1:<network.port>`). Point it at your
-    /// public TLS endpoint (e.g. `relay.example.com:443`) so wallets see
-    /// the same certificate through the mixnet.
-    pub upstream: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct PayToRelay {
@@ -281,7 +262,6 @@ pub struct Settings {
     pub pay_to_relay: PayToRelay,
     pub goblinpay: GoblinPay,
     pub name_authority: NameAuthority,
-    pub exit: MixnetExit,
     pub verified_users: VerifiedUsers,
     pub retention: Retention,
     pub options: Options,
@@ -526,12 +506,6 @@ impl Default for Settings {
                 write_rate_max: 10,
                 write_rate_window_secs: 3600,
                 reserved_file: None,
-            },
-            exit: MixnetExit {
-                enabled: false,
-                binary: "/usr/local/bin/floonet-mixexit".to_owned(),
-                data_dir: "./mixexit-data".to_owned(),
-                upstream: String::new(),
             },
             verified_users: VerifiedUsers {
                 mode: VerifiedUsersMode::Disabled,
