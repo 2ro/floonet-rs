@@ -7,17 +7,20 @@ Nostr network, forked from
 Floonet is a network of Nostr relays for the Grin community: anyone can
 run one, and anyone can run a name authority on it so people can claim
 (and optionally pay for) a `name@domain` identity. floonet-rs keeps the
-upstream relay core intact and adds three configurable, modular features:
+upstream relay core intact and adds four configurable, modular features:
 
 * An **event kind whitelist** (the keystone): default-deny admission.
   The relay accepts ONLY the kinds it is configured to allow and rejects
-  everything else. The shipped set is
-  `0, 3, 5, 13, 1059, 10002, 10050, 27235`.
+  everything else. The shipped default set covers the Goblin wallet and
+  the Magick Market marketplace (see the whitelist section).
+* A **public-note lockdown**: kinds `1` (text notes) and `30023`
+  (long-form articles) are accepted only from an operator-chosen author
+  list, closed by default so no one can spam public notes to your relay.
 * **Authentication**: NIP-42, with optional require-auth-to-write and an
   author whitelist.
 * A **built-in name authority**: `name@domain` NIP-05 identities with
   NIP-98 authenticated self-service registration, served in-process on
-  the relay's own subdomain — no separate hostname to run. Optionally
+  the relay's own subdomain - no separate hostname to run. Optionally
   paid in GRIN through GoblinPay.
 
 The public relay metadata stays neutral on purpose: the NIP-11 document
@@ -73,18 +76,49 @@ Requires a protobuf compiler (`protoc`) for the gRPC extension point.
 
 ```toml
 [limits]
-event_kind_allowlist = [0, 3, 5, 13, 1059, 10002, 10050, 27235]
+# Leaving this unset keeps the built-in Floonet default set below.
+event_kind_allowlist = [
+  0, 1, 3, 5, 7, 13, 14, 16, 17, 1059, 1111, 10000, 10002, 10050, 24133,
+  27235, 30000, 30003, 30023, 30078, 30402, 30405, 30406, 31990,
+]
 ```
+
+The default set is the union of what the Goblin wallet and the Magick
+Market marketplace use: profiles/contacts/deletes, gift wraps (1059), relay
+and DM-relay lists, NIP-98 auth, marketplace listings/collections/shipping
+(30402/30405/30406) and order events, plus text notes (1) and long-form
+articles (30023). The two public-note kinds are additionally author-locked
+(next section).
 
 Fail-closed semantics, enforced in the write path before anything is
 queued for persistence:
 
 * The listed kinds are accepted; **everything else is rejected** with an
   `OK false` / `blocked:` message.
-* Removing the line keeps the built-in Floonet set. There is no
+* Removing the line keeps the built-in Floonet default set. There is no
   allow-all: an empty list denies everything.
 * To add a kind, add it to the list and restart. Never narrow the list
   below what your users' wallets already depend on.
+
+## Public-note lockdown
+
+Kinds `1` (text notes) and `30023` (long-form articles) are accepted
+**only** from an operator-chosen list of authors. This is closed by
+default: with `public_note_authors` unset, kinds `1` and `30023` are
+rejected for everyone, so random notes cannot be spammed to your relay.
+Every other whitelisted kind (profiles, gift wraps, marketplace listings,
+lists) flows for everyone as usual, with default-deny by kind still
+applying underneath.
+
+```toml
+[authorization]
+# hex pubkeys or npubs; unset = closed (no one can post notes/articles)
+public_note_authors = ["npub1abc...", "fd3a...hex..."]
+```
+
+Running a Floonet relay means no public-note spam, and you choose exactly
+who can post notes and articles. Invalid entries are logged and skipped;
+the rest still apply.
 
 ## Authentication (NIP-42)
 
@@ -149,8 +183,8 @@ Or keep secrets out of the file entirely and use the environment:
 
 * **`pay_mode = "name"`**: claiming a name answers
   `402 {"error":"payment_required","pay_url":...}` with a hosted
-  GoblinPay page (GoblinPay, manual slatepack, or a `grin1` address if
-  the operator enabled that method). Once the payment confirms on chain,
+  GoblinPay page (Goblin Wallet over Nostr, or a manual slatepack paste).
+  Once the payment confirms on chain,
   the same register call succeeds. Clients have everything they need to
   send the user straight to the pay page and retry.
 * **`pay_mode = "write"`**: publishing requires a paid admission; the
