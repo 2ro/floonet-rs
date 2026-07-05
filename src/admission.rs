@@ -29,10 +29,14 @@ use crate::event::Event;
 /// data (NIP-78), 30402 product listing (NIP-99), 30405 product collection,
 /// 30406 shipping option (Gamma), 31990 handler info (NIP-89), 24133 remote
 /// signing (NIP-46).
-pub const DEFAULT_ALLOWED_KINDS: [u64; 23] = [
+pub const DEFAULT_ALLOWED_KINDS: [u64; 24] = [
     0, 1, 3, 5, 7, 13, 14, 16, 17, 1059, 1111, 10000, 10002, 10050, 24133,
-    27235, 30000, 30003, 30078, 30402, 30405, 30406, 31990,
+    27235, 30000, 30003, 30023, 30078, 30402, 30405, 30406, 31990,
 ];
+
+/// The public-note kinds accepted only from authorized authors: 1 (text
+/// note) and 30023 (long-form article). See [`RestrictedKindAuthors`].
+pub const LOCKED_KINDS: [u64; 2] = [1, 30023];
 
 /// Outcome of an admission check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +125,58 @@ impl AdmissionPolicy for PubkeyWhitelist {
     }
 }
 
+/// Restrict the public-note kinds (1 text note, 30023 long-form article) to
+/// an operator-configured set of authorized author pubkeys. Closed by
+/// default: with no authors configured these kinds are rejected for everyone,
+/// so random notes cannot be spammed to the relay. Every other kind (0
+/// profiles, 1059 gift wraps, marketplace kinds, lists, ephemeral) is
+/// completely unaffected. Always installed, so the lockdown holds even when
+/// the operator left the author list unset.
+pub struct RestrictedKindAuthors {
+    /// Canonical lowercase-hex author pubkeys allowed to publish locked kinds.
+    authors: Vec<String>,
+}
+
+impl RestrictedKindAuthors {
+    /// Build from operator config entries, each an npub or a 32-byte hex
+    /// pubkey (operator's choice). Invalid entries are logged and skipped
+    /// rather than failing the whole relay.
+    fn from_entries(entries: &[String]) -> RestrictedKindAuthors {
+        let mut authors = Vec::new();
+        for entry in entries {
+            let e = entry.trim();
+            if e.is_empty() {
+                continue;
+            }
+            let hex = if crate::utils::is_nip19(e) {
+                crate::utils::nip19_to_hex(e).ok()
+            } else if e.len() == 64 && crate::utils::is_hex(e) {
+                Some(e.to_lowercase())
+            } else {
+                None
+            };
+            match hex {
+                Some(h) if h.len() == 64 => authors.push(h.to_lowercase()),
+                _ => tracing::warn!("ignoring invalid public_note_authors entry: {:?}", entry),
+            }
+        }
+        RestrictedKindAuthors { authors }
+    }
+}
+
+impl AdmissionPolicy for RestrictedKindAuthors {
+    fn check(&self, event: &Event, _authed_pubkey: Option<&str>) -> Decision {
+        if !LOCKED_KINDS.contains(&event.kind) {
+            return Decision::Allow;
+        }
+        if self.authors.contains(&event.pubkey.to_lowercase()) {
+            Decision::Allow
+        } else {
+            Decision::deny("this relay accepts public notes only from authorized authors")
+        }
+    }
+}
+
 /// The composed admission pipeline the server consults.
 pub struct Admission {
     policies: Vec<Box<dyn AdmissionPolicy>>,
@@ -140,6 +196,17 @@ impl Admission {
             .clone()
             .unwrap_or_else(|| DEFAULT_ALLOWED_KINDS.to_vec());
         policies.push(Box::new(KindWhitelist { allowed }));
+        // Public-note lockdown: kinds 1 and 30023 only from authorized
+        // authors. Always installed (closed by default) and placed right
+        // after the kind whitelist so a locked kind is decided before auth.
+        let public_note_authors = settings
+            .authorization
+            .public_note_authors
+            .as_deref()
+            .unwrap_or(&[]);
+        policies.push(Box::new(RestrictedKindAuthors::from_entries(
+            public_note_authors,
+        )));
         // Optional: require NIP-42 auth to write.
         if settings.authorization.nip42_auth && settings.authorization.require_auth_to_write {
             policies.push(Box::new(RequireAuth));
@@ -185,10 +252,17 @@ mod tests {
 
     #[test]
     fn default_whitelist_accepts_allowed_kinds() {
-        let admission = Admission::from_settings(&floonet_settings());
+        // Authorize a known author so the locked public-note kinds (1, 30023)
+        // also pass; this test only exercises the kind whitelist.
+        let author = "aa".repeat(32);
+        let mut settings = floonet_settings();
+        settings.authorization.public_note_authors = Some(vec![author.clone()]);
+        let admission = Admission::from_settings(&settings);
         for kind in DEFAULT_ALLOWED_KINDS {
+            let mut e = event_of_kind(kind);
+            e.pubkey = author.clone();
             assert_eq!(
-                admission.check(&event_of_kind(kind), None),
+                admission.check(&e, None),
                 Decision::Allow,
                 "kind {kind} should be allowed"
             );
@@ -199,7 +273,8 @@ mod tests {
     fn default_whitelist_rejects_disallowed_kinds() {
         let admission = Admission::from_settings(&floonet_settings());
         // Common kinds outside the two-app whitelist are NOT accepted.
-        for kind in [4u64, 6, 42, 1984, 9735, 25910, 30017, 30018, 30023] {
+        // (30023 is now whitelisted but author-locked; see the lockdown tests.)
+        for kind in [4u64, 6, 42, 1984, 9735, 25910, 30017, 30018] {
             match admission.check(&event_of_kind(kind), None) {
                 Decision::Deny { auth_required, .. } => {
                     assert!(!auth_required, "kind rejection is not an auth issue");
@@ -215,7 +290,9 @@ mod tests {
         settings.limits.event_kind_allowlist = None;
         let admission = Admission::from_settings(&settings);
         assert_eq!(admission.check(&event_of_kind(1059), None), Decision::Allow);
-        assert_ne!(admission.check(&event_of_kind(30023), None), Decision::Allow);
+        // 9735 is not in the Floonet set, so a missing allowlist must reject
+        // it (proving the fallback is the set, not allow-all).
+        assert_ne!(admission.check(&event_of_kind(9735), None), Decision::Allow);
     }
 
     #[test]
@@ -232,7 +309,8 @@ mod tests {
         let mut settings = floonet_settings();
         settings.limits.event_kind_allowlist = Some(vec![1, 7]);
         let admission = Admission::from_settings(&settings);
-        assert_eq!(admission.check(&event_of_kind(1), None), Decision::Allow);
+        // Kind 7 is in the custom list and is not author-locked.
+        assert_eq!(admission.check(&event_of_kind(7), None), Decision::Allow);
         assert_ne!(admission.check(&event_of_kind(0), None), Decision::Allow);
     }
 
@@ -286,9 +364,125 @@ mod tests {
         let admission = Admission::from_settings(&settings);
         match admission.check(&event_of_kind(30023), None) {
             Decision::Deny { auth_required, .. } => {
-                assert!(!auth_required, "disallowed kind must not leak auth hints");
+                assert!(!auth_required, "locked kind must not leak auth hints");
             }
             Decision::Allow => panic!("must deny"),
+        }
+    }
+
+    // --- Public-note lockdown (kinds 1, 30023) ---
+
+    const AUTH_HEX: &str = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
+    const AUTH_NPUB: &str = "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6";
+
+    fn event_from(kind: u64, pubkey: &str) -> Event {
+        let mut e = event_of_kind(kind);
+        e.pubkey = pubkey.to_owned();
+        e
+    }
+
+    #[test]
+    fn locked_kinds_closed_by_default() {
+        // No authors configured: kinds 1 and 30023 are rejected for everyone.
+        let admission = Admission::from_settings(&floonet_settings());
+        for kind in LOCKED_KINDS {
+            match admission.check(&event_from(kind, AUTH_HEX), None) {
+                Decision::Deny { auth_required, .. } => assert!(!auth_required),
+                Decision::Allow => panic!("kind {kind} must be closed by default"),
+            }
+        }
+    }
+
+    #[test]
+    fn locked_kind_from_unauthorized_key_denied() {
+        let mut settings = floonet_settings();
+        settings.authorization.public_note_authors = Some(vec![AUTH_HEX.to_owned()]);
+        let admission = Admission::from_settings(&settings);
+        let stranger = "bb".repeat(32);
+        for kind in LOCKED_KINDS {
+            assert_ne!(
+                admission.check(&event_from(kind, &stranger), None),
+                Decision::Allow,
+                "kind {kind} from an unauthorized key must be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn locked_kind_from_authorized_hex_accepted() {
+        let mut settings = floonet_settings();
+        settings.authorization.public_note_authors = Some(vec![AUTH_HEX.to_owned()]);
+        let admission = Admission::from_settings(&settings);
+        for kind in LOCKED_KINDS {
+            assert_eq!(
+                admission.check(&event_from(kind, AUTH_HEX), None),
+                Decision::Allow,
+                "kind {kind} from the authorized hex key must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn locked_kind_from_authorized_npub_accepted() {
+        // Same key, configured as an npub instead of hex.
+        let mut settings = floonet_settings();
+        settings.authorization.public_note_authors = Some(vec![AUTH_NPUB.to_owned()]);
+        let admission = Admission::from_settings(&settings);
+        for kind in LOCKED_KINDS {
+            assert_eq!(
+                admission.check(&event_from(kind, AUTH_HEX), None),
+                Decision::Allow,
+                "kind {kind} from the authorized npub must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn non_locked_kinds_unaffected_by_random_keys() {
+        // No authors configured; profiles, gift wraps, and marketplace
+        // listings from arbitrary keys are still accepted (kind 0 stays open).
+        let admission = Admission::from_settings(&floonet_settings());
+        let stranger = "cc".repeat(32);
+        for kind in [0u64, 1059, 30402] {
+            assert_eq!(
+                admission.check(&event_from(kind, &stranger), None),
+                Decision::Allow,
+                "kind {kind} must be unaffected by the public-note lockdown"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_authors_skipped_valid_survives() {
+        let mut settings = floonet_settings();
+        settings.authorization.public_note_authors = Some(vec![
+            "npub1notvalid".to_owned(),
+            "dead".to_owned(),
+            AUTH_HEX.to_owned(),
+        ]);
+        let admission = Admission::from_settings(&settings);
+        assert_eq!(
+            admission.check(&event_from(1, AUTH_HEX), None),
+            Decision::Allow
+        );
+        assert_ne!(
+            admission.check(&event_from(1, &"bb".repeat(32)), None),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn lockdown_denies_before_auth_check() {
+        // With auth required, a locked kind from an unauthorized key is denied
+        // by the lockdown (not an auth issue) before the auth gate runs.
+        let mut settings = floonet_settings();
+        settings.authorization.nip42_auth = true;
+        settings.authorization.require_auth_to_write = true;
+        settings.authorization.public_note_authors = Some(vec![AUTH_HEX.to_owned()]);
+        let admission = Admission::from_settings(&settings);
+        match admission.check(&event_from(1, &"bb".repeat(32)), Some(AUTH_HEX)) {
+            Decision::Deny { auth_required, .. } => assert!(!auth_required),
+            Decision::Allow => panic!("must deny unauthorized author"),
         }
     }
 }
