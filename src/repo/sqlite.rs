@@ -208,8 +208,14 @@ impl SqliteRepo {
                 .filter(|x| is_hex(x) && x.len() == 64)
                 .filter_map(|x| hex::decode(x).ok())
                 .for_each(|x| params.push(Box::new(x)));
+            // Kind 1059 (NIP-59 gift wrap) is excluded from NIP-09 deletion
+            // entirely: the outer gift-wrap event is signed by a throwaway
+            // ephemeral key the sender briefly holds, so "author-only"
+            // deletion here would let the sender recall/grief an in-flight
+            // Grin payment envelope out from under its recipient. Every
+            // other kind keeps ordinary author-authorized deletion.
             let query = format!(
-                "UPDATE event SET hidden=TRUE WHERE kind!=5 AND author=? AND event_hash IN ({})",
+                "UPDATE event SET hidden=TRUE WHERE kind!=5 AND kind!=1059 AND author=? AND event_hash IN ({})",
                 repeat_vars(params.len() - 1)
             );
             let mut stmt = tx.prepare(&query)?;
@@ -219,9 +225,11 @@ impl SqliteRepo {
                 update_count,
                 e.get_author_prefix()
             );
-        } else {
+        } else if e.kind != 1059 {
             // check if a deletion has already been recorded for this event.
-            // Only relevant for non-deletion events
+            // Only relevant for non-deletion, non-gift-wrap events: a gift
+            // wrap must never be retroactively hidden by an earlier kind-5,
+            // for the same payment-reliability reason as above.
             let del_count = tx.query_row(
                 "SELECT e.id FROM event e WHERE e.author=? AND e.id IN (SELECT t.event_id FROM tag t WHERE t.name='e' AND t.kind=5 AND t.value=?) LIMIT 1;",
                 params![pubkey_blob, e.id], |row| row.get::<usize, usize>(0));
@@ -1609,6 +1617,158 @@ mod tests {
         assert_eq!(
             subquery_count, 2,
             "Should have 2 subqueries for 2 different tag keys"
+        );
+    }
+
+    // --- Kind-1059 (NIP-59 gift wrap) deletion guard (payment reliability) ---
+    //
+    // These exercise the real write path against a temp-file-backed
+    // SQLite database (not the shared in-memory URI, so concurrently
+    // running tests don't collide on the same underlying db).
+
+    fn unique_test_settings(label: &str) -> Settings {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "floonet-rs-giftwrap-delete-test-{}-{}-{}",
+            std::process::id(),
+            label,
+            n
+        ));
+        std::fs::create_dir_all(&dir).expect("create test db dir");
+        let mut settings = Settings::default();
+        settings.database.data_directory = dir.to_string_lossy().into_owned();
+        settings.database.in_memory = false;
+        settings
+    }
+
+    fn test_event(kind: u64, id: &str, pubkey: &str, tags: Vec<Vec<String>>) -> Event {
+        let mut e = Event::simple_event();
+        e.kind = kind;
+        e.id = id.to_owned();
+        e.pubkey = pubkey.to_owned();
+        e.tags = tags;
+        e
+    }
+
+    async fn hidden_flag(repo: &SqliteRepo, event_id_hex: &str) -> bool {
+        let pool = repo.read_pool.clone();
+        let id = event_id_hex.to_owned();
+        task::spawn_blocking(move || {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT hidden FROM event WHERE event_hash=?",
+                params![hex::decode(&id).unwrap()],
+                |row| row.get::<usize, bool>(0),
+            )
+            .unwrap()
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn kind5_delete_of_giftwrap_is_blocked_even_from_same_ephemeral_author() {
+        let settings = unique_test_settings("same-author");
+        let (_registry, metrics) = crate::server::create_metrics();
+        let repo = SqliteRepo::new(&settings, metrics);
+        repo.migrate_up().await.unwrap();
+
+        let ephemeral_author = "ab".repeat(32);
+        let recipient = "cd".repeat(32);
+        let giftwrap_id = "11".repeat(32);
+        let delete_id = "22".repeat(32);
+
+        let giftwrap = test_event(
+            1059,
+            &giftwrap_id,
+            &ephemeral_author,
+            vec![vec!["p".to_owned(), recipient]],
+        );
+        repo.write_event(&giftwrap).await.unwrap();
+
+        // The sender still holds the ephemeral gift-wrap key right after
+        // publishing and tries to recall the payment, targeting the gift
+        // wrap's own event id from that same (non-recipient) key.
+        let delete = test_event(
+            5,
+            &delete_id,
+            &ephemeral_author,
+            vec![vec!["e".to_owned(), giftwrap_id.clone()]],
+        );
+        repo.write_event(&delete).await.unwrap();
+
+        assert!(
+            !hidden_flag(&repo, &giftwrap_id).await,
+            "a kind-5 from the gift wrap's own (ephemeral, non-recipient) author must not hide the payment envelope"
+        );
+    }
+
+    #[tokio::test]
+    async fn kind5_predating_giftwrap_does_not_hide_it_on_arrival() {
+        // Same scenario but the deletion happens to land before the gift
+        // wrap does; the reverse ("already deleted") check must also spare
+        // kind 1059.
+        let settings = unique_test_settings("delete-first");
+        let (_registry, metrics) = crate::server::create_metrics();
+        let repo = SqliteRepo::new(&settings, metrics);
+        repo.migrate_up().await.unwrap();
+
+        let ephemeral_author = "ab".repeat(32);
+        let recipient = "cd".repeat(32);
+        let giftwrap_id = "33".repeat(32);
+        let delete_id = "44".repeat(32);
+
+        let delete = test_event(
+            5,
+            &delete_id,
+            &ephemeral_author,
+            vec![vec!["e".to_owned(), giftwrap_id.clone()]],
+        );
+        repo.write_event(&delete).await.unwrap();
+
+        let giftwrap = test_event(
+            1059,
+            &giftwrap_id,
+            &ephemeral_author,
+            vec![vec!["p".to_owned(), recipient]],
+        );
+        repo.write_event(&giftwrap).await.unwrap();
+
+        assert!(
+            !hidden_flag(&repo, &giftwrap_id).await,
+            "a pre-existing kind-5 must not retroactively hide a gift wrap on arrival"
+        );
+    }
+
+    #[tokio::test]
+    async fn kind5_delete_still_works_for_non_giftwrap_kinds() {
+        // Regression check: the guard is scoped to kind 1059 only; ordinary
+        // NIP-09 same-author deletion of every other kind is unaffected.
+        let settings = unique_test_settings("control");
+        let (_registry, metrics) = crate::server::create_metrics();
+        let repo = SqliteRepo::new(&settings, metrics);
+        repo.migrate_up().await.unwrap();
+
+        let author = "ab".repeat(32);
+        let note_id = "55".repeat(32);
+        let delete_id = "66".repeat(32);
+
+        let note = test_event(7, &note_id, &author, vec![]);
+        repo.write_event(&note).await.unwrap();
+
+        let delete = test_event(
+            5,
+            &delete_id,
+            &author,
+            vec![vec!["e".to_owned(), note_id.clone()]],
+        );
+        repo.write_event(&delete).await.unwrap();
+
+        assert!(
+            hidden_flag(&repo, &note_id).await,
+            "a same-author kind-5 must still hide ordinary (non-1059) kinds"
         );
     }
 }

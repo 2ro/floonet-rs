@@ -185,10 +185,16 @@ impl AdmissionPolicy for RestrictedKindAuthors {
 /// floonet-strfry's write-policy plugin (commit 55231da): this relay's
 /// database writer honors NIP-40 `expiration` tags as an automatic deletion
 /// trigger, so a Grin payment gift wrap must never carry one. Also requires
-/// exactly one well-formed `p` tag (32-byte hex recipient) so a malformed
-/// gift wrap the recipient's client cannot route never lands on the relay
-/// either. Every other kind is unaffected. Fails closed on malformed tags,
-/// matching every other policy here.
+/// exactly one well-formed `p` tag: a strict-lowercase 64-char hex recipient
+/// (uppercase/mixed-case is rejected, not just normalized away) because the
+/// recipient-only read gate elsewhere in the relay does a case-sensitive
+/// string compare against the NIP-42 auth pubkey (which nostr keys always
+/// carry as lowercase hex) -- an uppercase/mixed-case `p` would be accepted
+/// onto the relay but could never be read back by its recipient, silently
+/// burning the payment it carries. On top of that, a NIP-59 gift wrap
+/// legitimately carries exactly one tag (the single `p`), so any additional
+/// tag is also rejected outright. Every other kind is unaffected. Fails
+/// closed on malformed tags, matching every other policy here.
 pub struct GiftWrapRetention;
 
 impl AdmissionPolicy for GiftWrapRetention {
@@ -209,12 +215,22 @@ impl AdmissionPolicy for GiftWrapRetention {
             .filter(|tag| tag.len() >= 2 && tag[0] == "p")
             .map(|tag| tag[1].as_str())
             .collect();
+        // Strict lowercase hex: an uppercase/mixed-case recipient would pass
+        // a case-insensitive hex check but can never match the
+        // case-sensitive recipient comparison the read-gate performs, so it
+        // must be rejected here rather than merely normalized.
         let recipient_ok = match p_pubkeys.as_slice() {
-            [pubkey] => pubkey.len() == 64 && crate::utils::is_hex(pubkey),
+            [pubkey] => pubkey.len() == 64 && crate::utils::is_lower_hex(pubkey),
             _ => false,
         };
         if !recipient_ok {
             return Decision::deny("gift wrap missing recipient");
+        }
+        // A gift wrap carries only the one `p` tag; anything else riding
+        // along (an extra `e`, `t`, etc.) isn't part of NIP-59 and is
+        // rejected rather than silently allowed through.
+        if event.tags.len() != 1 {
+            return Decision::deny("gift wrap has extraneous tags");
         }
         Decision::Allow
     }
@@ -624,6 +640,86 @@ mod tests {
         let admission = Admission::from_settings(&floonet_settings());
         let recipient = "aa".repeat(32);
         let event = giftwrap_with_tags(vec![tag(&["p", &recipient])]);
+        assert_eq!(admission.check(&event, None), Decision::Allow);
+    }
+
+    #[test]
+    fn giftwrap_minimal_valid_wrap_accepted() {
+        // The minimal legitimate NIP-59 gift wrap: exactly one well-formed,
+        // strictly-lowercase-hex `p` tag and nothing else.
+        let admission = Admission::from_settings(&floonet_settings());
+        let recipient = "df".repeat(32);
+        let event = giftwrap_with_tags(vec![tag(&["p", &recipient])]);
+        assert_eq!(admission.check(&event, None), Decision::Allow);
+    }
+
+    #[test]
+    fn giftwrap_valid_lowercase_p_accepted() {
+        let admission = Admission::from_settings(&floonet_settings());
+        let recipient = "0123456789abcdef".repeat(4);
+        assert_eq!(recipient.len(), 64);
+        let event = giftwrap_with_tags(vec![tag(&["p", &recipient])]);
+        assert_eq!(admission.check(&event, None), Decision::Allow);
+    }
+
+    #[test]
+    fn giftwrap_uppercase_p_rejected() {
+        // Recipient hex is well-formed but uppercase. The relay's
+        // recipient-only read gate does a case-sensitive compare against
+        // the lowercase-hex NIP-42 auth pubkey, so an uppercase recipient
+        // here would be an undeliverable, permanently stuck payment.
+        let admission = Admission::from_settings(&floonet_settings());
+        let recipient = "AA".repeat(32);
+        let event = giftwrap_with_tags(vec![tag(&["p", &recipient])]);
+        match admission.check(&event, None) {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("missing recipient"), "{reason}");
+            }
+            Decision::Allow => panic!("uppercase-hex recipient must be rejected"),
+        }
+    }
+
+    #[test]
+    fn giftwrap_mixedcase_p_rejected() {
+        let admission = Admission::from_settings(&floonet_settings());
+        let mut recipient = "aa".repeat(32);
+        recipient.replace_range(0..1, "A");
+        assert_eq!(recipient.len(), 64);
+        let event = giftwrap_with_tags(vec![tag(&["p", &recipient])]);
+        match admission.check(&event, None) {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("missing recipient"), "{reason}");
+            }
+            Decision::Allow => panic!("mixed-case recipient must be rejected"),
+        }
+    }
+
+    #[test]
+    fn giftwrap_extraneous_tags_rejected() {
+        // A NIP-59 gift wrap carries only the single `p` tag; anything else
+        // riding along is not part of the spec and must be rejected.
+        let admission = Admission::from_settings(&floonet_settings());
+        let recipient = "aa".repeat(32);
+        let event = giftwrap_with_tags(vec![tag(&["p", &recipient]), tag(&["t", "spam"])]);
+        match admission.check(&event, None) {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("extraneous tags"), "{reason}");
+            }
+            Decision::Allow => panic!("gift wrap with an extra tag must be rejected"),
+        }
+    }
+
+    #[test]
+    fn non_giftwrap_unaffected_by_case_and_tag_count() {
+        // Kind 0 (profile) is not the gift-wrap kind, so mixed-case/extra
+        // `p` tags and additional tags are all untouched by this guard.
+        let admission = Admission::from_settings(&floonet_settings());
+        let mut event = event_of_kind(0);
+        event.tags = vec![
+            tag(&["p", &"AA".repeat(32)]),
+            tag(&["p", &"bb".repeat(32)]),
+            tag(&["t", "hello"]),
+        ];
         assert_eq!(admission.check(&event, None), Decision::Allow);
     }
 

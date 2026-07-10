@@ -251,8 +251,14 @@ ON CONFLICT (id) DO NOTHING"#,
                 .filter_map(|x| hex::decode(x).ok())
                 .collect();
 
+            // Kind 1059 (NIP-59 gift wrap) is excluded from NIP-09 deletion
+            // entirely: the outer gift-wrap event is signed by a throwaway
+            // ephemeral key the sender briefly holds, so "author-only"
+            // deletion here would let the sender recall/grief an in-flight
+            // Grin payment envelope out from under its recipient. Every
+            // other kind keeps ordinary author-authorized deletion.
             let mut builder = QueryBuilder::new(
-                "UPDATE \"event\" SET hidden = 1::bit(1) WHERE kind != 5 AND pub_key = ",
+                "UPDATE \"event\" SET hidden = 1::bit(1) WHERE kind != 5 AND kind != 1059 AND pub_key = ",
             );
             builder.push_bind(hex::decode(&e.pubkey).ok());
             builder.push(" AND id IN (");
@@ -269,9 +275,11 @@ ON CONFLICT (id) DO NOTHING"#,
                 update_count,
                 e.get_author_prefix()
             );
-        } else {
+        } else if e.kind != 1059 {
             // check if a deletion has already been recorded for this event.
-            // Only relevant for non-deletion events
+            // Only relevant for non-deletion, non-gift-wrap events: a gift
+            // wrap must never be retroactively hidden by an earlier kind-5,
+            // for the same payment-reliability reason as above.
             let del_count = sqlx::query(
                 "SELECT e.id FROM \"event\" e \
             LEFT JOIN tag t ON e.id = t.event_id \
