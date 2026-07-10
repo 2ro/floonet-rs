@@ -15,6 +15,12 @@ mod common;
 
 /// Build a signed event of `kind` and return (event_json, event_id).
 fn signed_event(kind: u64, content: &str) -> (String, String) {
+    signed_event_with_tags(kind, content, vec![])
+}
+
+/// Build a signed event of `kind` with the given tags and return
+/// (event_json, event_id).
+fn signed_event_with_tags(kind: u64, content: &str, tags: Vec<Vec<String>>) -> (String, String) {
     let secp = Secp256k1::new();
     let key_pair = KeyPair::new(&secp, &mut rand::thread_rng());
     let public_key = XOnlyPublicKey::from_keypair(&key_pair);
@@ -25,7 +31,7 @@ fn signed_event(kind: u64, content: &str) -> (String, String) {
         delegated_by: None,
         created_at: unix_time(),
         kind,
-        tags: vec![],
+        tags,
         content: content.to_owned(),
         sig: "0".to_owned(),
         tagidx: None,
@@ -89,8 +95,15 @@ async fn whitelist_accepts_allowed_kind_and_rejects_disallowed() -> Result<()> {
         "kind 0 must be accepted: {ok}"
     );
 
-    // Kind 1059 (gift wrap) IS in the whitelist: accepted.
-    let (msg, id) = signed_event(1059, "opaque ciphertext");
+    // Kind 1059 (gift wrap) IS in the whitelist: accepted, provided it is a
+    // well-formed NIP-59 wrap with exactly one lowercase-hex `p` recipient
+    // tag (the GiftWrapRetention admission guard rejects a tagless wrap).
+    let recipient = "aa".repeat(32);
+    let (msg, id) = signed_event_with_tags(
+        1059,
+        "opaque ciphertext",
+        vec![vec!["p".to_owned(), recipient]],
+    );
     let ok = publish_and_get_ok(relay.port, &msg, &id).await?;
     assert_eq!(
         ok.get(2).and_then(Value::as_bool),
