@@ -21,22 +21,26 @@ use crate::event::Event;
 ///
 /// Goblin wallet: 0 profile, 3 contacts, 5 delete (NIP-09), 13 seal (NIP-59),
 /// 1059 gift wrap (NIP-59), 10002 relay list (NIP-65), 10050 DM relays
-/// (NIP-17), 27235 NIP-98 HTTP auth (name authority).
+/// (NIP-17), 24133 remote signing (NIP-46), 24140 Authorize Sessions channel
+/// (Goblin-native), 27235 NIP-98 HTTP auth (name authority).
 ///
 /// Magick Market: 1 text note, 7 reaction (NIP-25), 14 order chat, 16 order
 /// status, 17 payment receipt (Gamma), 1111 comment (NIP-22), 10000
 /// mute/blacklist, 30000 people set, 30003 bookmark set (NIP-51), 30078 app
 /// data (NIP-78), 30402 product listing (NIP-99), 30405 product collection,
-/// 30406 shipping option (Gamma), 31990 handler info (NIP-89), 24133 remote
-/// signing (NIP-46).
-pub const DEFAULT_ALLOWED_KINDS: [u64; 24] = [
-    0, 1, 3, 5, 7, 13, 14, 16, 17, 1059, 1111, 10000, 10002, 10050, 24133,
-    27235, 30000, 30003, 30023, 30078, 30402, 30405, 30406, 31990,
+/// 30406 shipping option (Gamma), 31990 handler info (NIP-89).
+pub const DEFAULT_ALLOWED_KINDS: [u64; 25] = [
+    0, 1, 3, 5, 7, 13, 14, 16, 17, 1059, 1111, 10000, 10002, 10050, 24133, 24140, 27235, 30000,
+    30003, 30023, 30078, 30402, 30405, 30406, 31990,
 ];
 
 /// The public-note kinds accepted only from authorized authors: 1 (text
 /// note) and 30023 (long-form article). See [`RestrictedKindAuthors`].
 pub const LOCKED_KINDS: [u64; 2] = [1, 30023];
+
+/// The gift-wrap kind (NIP-59) carrying Grin payment envelopes. See
+/// [`GiftWrapRetention`].
+const GIFT_WRAP_KIND: u64 = 1059;
 
 /// Outcome of an admission check.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,6 +181,45 @@ impl AdmissionPolicy for RestrictedKindAuthors {
     }
 }
 
+/// Gift-wrap retention/shape guard (kind 1059 only). Parity with
+/// floonet-strfry's write-policy plugin (commit 55231da): this relay's
+/// database writer honors NIP-40 `expiration` tags as an automatic deletion
+/// trigger, so a Grin payment gift wrap must never carry one. Also requires
+/// exactly one well-formed `p` tag (32-byte hex recipient) so a malformed
+/// gift wrap the recipient's client cannot route never lands on the relay
+/// either. Every other kind is unaffected. Fails closed on malformed tags,
+/// matching every other policy here.
+pub struct GiftWrapRetention;
+
+impl AdmissionPolicy for GiftWrapRetention {
+    fn check(&self, event: &Event, _authed_pubkey: Option<&str>) -> Decision {
+        if event.kind != GIFT_WRAP_KIND {
+            return Decision::Allow;
+        }
+        if event
+            .tags
+            .iter()
+            .any(|tag| tag.first().map(String::as_str) == Some("expiration"))
+        {
+            return Decision::deny("expiration not allowed on gift wraps");
+        }
+        let p_pubkeys: Vec<&str> = event
+            .tags
+            .iter()
+            .filter(|tag| tag.len() >= 2 && tag[0] == "p")
+            .map(|tag| tag[1].as_str())
+            .collect();
+        let recipient_ok = match p_pubkeys.as_slice() {
+            [pubkey] => pubkey.len() == 64 && crate::utils::is_hex(pubkey),
+            _ => false,
+        };
+        if !recipient_ok {
+            return Decision::deny("gift wrap missing recipient");
+        }
+        Decision::Allow
+    }
+}
+
 /// The composed admission pipeline the server consults.
 pub struct Admission {
     policies: Vec<Box<dyn AdmissionPolicy>>,
@@ -196,6 +239,11 @@ impl Admission {
             .clone()
             .unwrap_or_else(|| DEFAULT_ALLOWED_KINDS.to_vec());
         policies.push(Box::new(KindWhitelist { allowed }));
+        // Gift-wrap retention/shape guard: kind 1059 only, no expiration
+        // tag, exactly one well-formed p recipient. Always installed right
+        // after the kind whitelist so only already-allowed 1059s are
+        // inspected, before any auth or author-restriction policy runs.
+        policies.push(Box::new(GiftWrapRetention));
         // Public-note lockdown: kinds 1 and 30023 only from authorized
         // authors. Always installed (closed by default) and placed right
         // after the kind whitelist so a locked kind is decided before auth.
@@ -239,10 +287,21 @@ impl Admission {
 mod tests {
     use super::*;
 
+    /// Kind 1059 (gift wrap) defaults to a single well-formed `p` tag so
+    /// existing tests that only care about other checks keep passing the
+    /// gift-wrap retention/shape guard; the guard's own tests below build
+    /// tags explicitly to exercise it directly.
     fn event_of_kind(kind: u64) -> Event {
         let mut e = Event::simple_event();
         e.kind = kind;
+        if kind == GIFT_WRAP_KIND {
+            e.tags = vec![tag(&["p", &"aa".repeat(32)])];
+        }
         e
+    }
+
+    fn tag(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
     }
 
     fn floonet_settings() -> Settings {
@@ -483,6 +542,126 @@ mod tests {
         match admission.check(&event_from(1, &"bb".repeat(32)), Some(AUTH_HEX)) {
             Decision::Deny { auth_required, .. } => assert!(!auth_required),
             Decision::Allow => panic!("must deny unauthorized author"),
+        }
+    }
+
+    // --- Gift-wrap retention/shape guard (kind 1059) ---
+
+    fn giftwrap_with_tags(tags: Vec<Vec<String>>) -> Event {
+        let mut e = event_of_kind(GIFT_WRAP_KIND);
+        e.tags = tags;
+        e
+    }
+
+    #[test]
+    fn giftwrap_expiration_tag_rejected() {
+        let admission = Admission::from_settings(&floonet_settings());
+        let recipient = "aa".repeat(32);
+        let event = giftwrap_with_tags(vec![
+            tag(&["p", &recipient]),
+            tag(&["expiration", "1700000100"]),
+        ]);
+        match admission.check(&event, None) {
+            Decision::Deny {
+                reason,
+                auth_required,
+            } => {
+                assert!(!auth_required);
+                assert!(reason.contains("expiration not allowed"), "{reason}");
+            }
+            Decision::Allow => panic!("gift wrap with expiration must be rejected"),
+        }
+    }
+
+    #[test]
+    fn giftwrap_no_p_tag_rejected() {
+        let admission = Admission::from_settings(&floonet_settings());
+        let event = giftwrap_with_tags(vec![]);
+        match admission.check(&event, None) {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("missing recipient"), "{reason}");
+            }
+            Decision::Allow => panic!("gift wrap with no p tag must be rejected"),
+        }
+    }
+
+    #[test]
+    fn giftwrap_multiple_p_tags_rejected() {
+        let admission = Admission::from_settings(&floonet_settings());
+        let a = "aa".repeat(32);
+        let b = "bb".repeat(32);
+        let event = giftwrap_with_tags(vec![tag(&["p", &a]), tag(&["p", &b])]);
+        match admission.check(&event, None) {
+            Decision::Deny { reason, .. } => {
+                assert!(reason.contains("missing recipient"), "{reason}");
+            }
+            Decision::Allow => panic!("gift wrap with multiple p tags must be rejected"),
+        }
+    }
+
+    #[test]
+    fn giftwrap_malformed_p_tag_rejected() {
+        let admission = Admission::from_settings(&floonet_settings());
+        for bad in ["short", &"z".repeat(64), ""] {
+            let event = giftwrap_with_tags(vec![tag(&["p", bad])]);
+            match admission.check(&event, None) {
+                Decision::Deny { reason, .. } => {
+                    assert!(reason.contains("missing recipient"), "{bad:?}: {reason}");
+                }
+                Decision::Allow => panic!("malformed p tag {bad:?} must be rejected"),
+            }
+        }
+        // A `p` tag present but with no value at all (single-element tag).
+        let event = giftwrap_with_tags(vec![tag(&["p"])]);
+        match admission.check(&event, None) {
+            Decision::Deny { reason, .. } => assert!(reason.contains("missing recipient")),
+            Decision::Allow => panic!("p tag with no value must be rejected"),
+        }
+    }
+
+    #[test]
+    fn giftwrap_valid_single_p_no_expiration_accepted() {
+        let admission = Admission::from_settings(&floonet_settings());
+        let recipient = "aa".repeat(32);
+        let event = giftwrap_with_tags(vec![tag(&["p", &recipient])]);
+        assert_eq!(admission.check(&event, None), Decision::Allow);
+    }
+
+    #[test]
+    fn non_giftwrap_with_expiration_unaffected() {
+        // Expiration tags are fine on every other kind; only 1059 is guarded.
+        // Kind 1 is a locked public-note kind, so authorize the author to
+        // isolate this test to the gift-wrap guard.
+        let mut settings = floonet_settings();
+        settings.authorization.public_note_authors = Some(vec![AUTH_HEX.to_owned()]);
+        let admission = Admission::from_settings(&settings);
+        let mut event = event_from(1, AUTH_HEX);
+        event.tags = vec![tag(&["expiration", "1700000100"])];
+        assert_eq!(admission.check(&event, None), Decision::Allow);
+    }
+
+    #[test]
+    fn giftwrap_guard_runs_before_auth_check() {
+        // Malformed gift-wrap shape is caught even when auth would otherwise
+        // gate the write; the shape check must run first.
+        let mut settings = floonet_settings();
+        settings.authorization.nip42_auth = true;
+        settings.authorization.require_auth_to_write = true;
+        let admission = Admission::from_settings(&settings);
+        let recipient = "aa".repeat(32);
+        let event = giftwrap_with_tags(vec![
+            tag(&["expiration", "1700000100"]),
+            tag(&["p", &recipient]),
+        ]);
+        match admission.check(&event, None) {
+            Decision::Deny {
+                reason,
+                auth_required,
+            } => {
+                assert!(!auth_required, "must be the shape guard, not the auth gate");
+                assert!(reason.contains("expiration not allowed"), "{reason}");
+            }
+            Decision::Allow => panic!("must deny"),
         }
     }
 }
